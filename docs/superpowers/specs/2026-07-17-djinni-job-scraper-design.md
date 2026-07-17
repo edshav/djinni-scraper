@@ -80,7 +80,8 @@ Each unit has one purpose and a narrow interface:
    URLs. Stop when: the page yields no job URLs (last page), OR `--max-pages` is
    reached, OR the cumulative jobs collected reaches `--max-jobs`.
 3. **Per job URL.** If a file for that job already exists in the out-dir (matched
-   by job id/slug, ignoring the date prefix) → **skip** (resumable). Otherwise
+   by the numeric job id from the URL — the stable identifier, independent of
+   date prefix or slug) → **skip** (resumable). Otherwise
    `get` the detail page, `parse_job`, and write the `.md`.
 4. A polite delay (with jitter) precedes **every** HTTP request (both listing and
    detail fetches).
@@ -108,8 +109,9 @@ Each unit has one purpose and a narrow interface:
   filesystem-safe (scheme stripped, non-`[A-Za-z0-9._-]` chars replaced with `_`):
   `2026-07-17__djinni.co_jobs_123456-senior-python-engineer.md`
   - Date = scrape date, `YYYY-MM-DD`.
-- **Skip-existing** matches on the job's id/slug portion (ignoring the date
-  prefix), so a re-run on a later date does not re-fetch already-saved jobs.
+- **Skip-existing** matches on the numeric job id parsed from the URL (the stable
+  identifier, independent of date prefix or slug), so a re-run on a later date
+  does not re-fetch already-saved jobs.
 - **File contents** — labeled fields followed by the full description:
   - `Title`, `Company`, `Salary`, `Location/Remote`, `Experience`, `English`,
     `Company type/Domain`, `Posted`, `URL`, `Scraped-at`, then the full

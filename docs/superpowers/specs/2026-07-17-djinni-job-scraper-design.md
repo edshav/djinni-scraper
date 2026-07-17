@@ -7,27 +7,42 @@
 
 Collect job postings from a djinni.co job-board listing URL for later analysis.
 Given a listing URL (no authentication required), the tool paginates through the
-whole listing, follows each posting to its detail page, extracts the full
-un-truncated content, and saves one Markdown file per posting. Each filename
-contains the scrape date and the posting URL.
+whole listing and saves one Markdown file per posting. **The full posting content
+lives on the listing page itself** — no detail-page visits are needed. Each
+filename contains the scrape date and the posting URL.
 
 ## Key facts established during research
 
-- **Server-side rendered.** All job data (titles, metadata, truncated
-  descriptions) is present in the initial HTML. No headless browser is required;
-  a plain HTTP client + HTML parser is sufficient.
-- **Two-level structure.** A paginated listing (`/jobs/?page=N`) whose cards link
-  to detail pages (`/jobs/<id>-<slug>/`) that hold the full description.
-  "Expanding" a posting means following that link and scraping the detail page.
+- **Server-side rendered.** All job data (titles, metadata, and the *full*
+  descriptions) is present in the initial listing-page HTML. No headless browser
+  is required; a plain HTTP client + HTML parser is sufficient.
+- **Full description is on the listing page.** Each job card contains two copies
+  of the description: `js-truncated-text` (the snippet shown) and
+  `js-original-text description-expandable d-none` — the **complete** description,
+  already in the HTML but hidden with `d-none` and revealed by the "More" link via
+  JavaScript. Because we parse HTML directly (not a browser), we read the full
+  hidden text straight from the DOM. **We do not fetch detail pages.** Verified:
+  the hidden blocks hold complete ~2,000–2,800-character descriptions.
+- **Card container.** Each posting is a `<... class="job-item card-link ...">`
+  element inside `<ul class="list-unstyled list-jobs ...">`. A page of this
+  listing has 15 cards. The title is in `job-item__position`, tag metadata in
+  `job-item__tags`, salary in a `text-success` element, and the card's anchor
+  `href="/jobs/<id>-<slug>/"` gives the posting URL and numeric id.
+- **Short-description edge case.** One card on the sample page had **no**
+  `js-original-text` block — its description was short enough not to be truncated.
+  Rule: per card, description = `js-original-text` if present, else
+  `js-truncated-text` (the visible text is already complete).
 - **robots.txt allows `/jobs/`.** Disallowed paths are only `/jobs2`, `/q`,
-  `/developers`, `/free-jobs`, `/set_lang`. No `Crawl-delay` directive is
-  specified, so the tool self-imposes a polite delay.
+  `/developers`, `/free-jobs`, `/set_lang`. No `Crawl-delay` directive, so the
+  tool self-imposes a polite delay.
 - **Hard constraint — IP-block risk.** The user was previously IP-blocked for a
   full day by djinni for scraping too aggressively. Avoiding a block is the top
-  priority, ranked above speed.
+  priority, ranked above speed. Not fetching detail pages cuts request volume by
+  ~15× (one request per ~15 postings), which materially lowers block risk.
 
 ## Non-goals (YAGNI)
 
+- **No detail-page requests** — everything is parsed from listing pages.
 - No headless browser / JavaScript execution.
 - No concurrency or parallel requests.
 - No database; output is flat Markdown files.
@@ -44,11 +59,11 @@ djinni-scrapper/
     __init__.py
     models.py     # JobPosting dataclass
     fetcher.py    # HTTP + all anti-block logic
-    parser.py     # HTML -> JobPosting / listing HTML -> job URLs
+    parser.py     # listing HTML -> list[JobPosting]
     storage.py    # JobPosting -> .md, skip-existing
     cli.py        # arg parsing, orchestration, progress, block handling
   tests/
-    fixtures/     # saved real HTML (a job detail page + a listing page)
+    fixtures/     # saved real listing-page HTML
     test_parser.py
     test_storage.py
   pyproject.toml  # deps: requests, beautifulsoup4, lxml
@@ -58,14 +73,13 @@ djinni-scrapper/
 Each unit has one purpose and a narrow interface:
 
 - **`models.JobPosting`** — dataclass holding one posting's fields. All content
-  fields optional (`None`/empty allowed) so a page missing a field never crashes.
+  fields optional (`None`/empty allowed) so a card missing a field never crashes.
 - **`fetcher.Fetcher`** — owns a `requests.Session` and *all* politeness/anti-block
   behavior. Interface: `get(url) -> str` (HTML). Raises `BlockedError` when a block
   is detected. Depends on: `requests`, config (delay, jitter, user-agent).
-- **`parser`** — pure functions over HTML strings, no I/O.
-  - `parse_listing(html, base_url) -> list[str]` — absolute job-detail URLs on a
-    listing page (empty list signals "no more results / last page").
-  - `parse_job(html, url) -> JobPosting`.
+- **`parser`** — pure functions over HTML strings, no I/O:
+  - `parse_listing(html, base_url) -> list[JobPosting]` — one `JobPosting` per
+    `job-item` card. An empty list signals "no more results / last page".
 - **`storage`** — `JobPosting` -> `.md` file; filename building; skip-existing check.
   Depends on: filesystem, out-dir.
 - **`cli`** — wires the above, prints progress, enforces limits, handles
@@ -75,21 +89,25 @@ Each unit has one purpose and a narrow interface:
 
 1. CLI parses `listing_url` (positional) and flags.
 2. **Paginate the listing.** For `page = 1, 2, ...`, build the page URL by merging
-   a `page=N` query parameter into `listing_url` (preserving any existing filter
-   params via `urllib.parse`), fetch it, and `parse_listing` it into job-detail
-   URLs. Stop when: the page yields no job URLs (last page), OR `--max-pages` is
-   reached, OR the cumulative jobs collected reaches `--max-jobs`.
-3. **Per job URL.** If a file for that job already exists in the out-dir (matched
-   by the numeric job id from the URL — the stable identifier, independent of
-   date prefix or slug) → **skip** (resumable). Otherwise
-   `get` the detail page, `parse_job`, and write the `.md`.
-4. A polite delay (with jitter) precedes **every** HTTP request (both listing and
-   detail fetches).
+   a `page=N` query parameter into `listing_url` (preserving existing filter
+   params such as `primary_keyword`, `salary`, `search_type` via
+   `urllib.parse`), fetch it, and `parse_listing` it into a list of `JobPosting`.
+   Stop when: the page yields **no** cards (last page), OR `--max-pages` is
+   reached, OR cumulative postings reach `--max-jobs`.
+3. **Per posting (already fully parsed from the page).** If a file for that job
+   already exists in the out-dir (matched by the numeric job id from the URL —
+   the stable identifier, independent of date prefix or slug) → **skip**.
+   Otherwise write the `.md`. No additional HTTP request is made per posting.
+4. A polite delay (with jitter) precedes **every** listing-page request. Since
+   postings need no requests of their own, total requests ≈ number of listing
+   pages.
 
 ## Fetcher — anti-block behavior (primary requirement)
 
 - **Sequential only.** No threads/async; parallel requests are the top block
   trigger.
+- **Minimal request volume.** Only listing pages are fetched (~1 request per 15
+  postings), the single biggest reduction in block risk.
 - **Generous randomized delay.** Default `--delay 4.0` seconds with ±50% jitter
   (actual ≈ 2–6 s per request), so cadence is not robotic. Raise for large runs.
 - **Realistic headers.** A current Chrome `User-Agent` and `Accept-Language`,
@@ -99,19 +117,20 @@ Each unit has one purpose and a narrow interface:
 - **Stop-on-block.** On `429`, `403`, or a detected Cloudflare challenge page,
   raise `BlockedError` to halt the entire run gracefully with a clear message
   ("you may be throttled — wait and re-run later"). Because per-job files are
-  already saved, re-running later resumes from where it stopped. The tool
-  deliberately does **not** keep requesting once flagged.
+  already saved, re-running later resumes. The tool deliberately does **not** keep
+  requesting once flagged.
 
 ## Storage & filename
 
 - One `.md` file per job posting, written to `--out-dir` (default `./output`).
-- **Filename** contains the scrape date and the URL, sanitized to be
-  filesystem-safe (scheme stripped, non-`[A-Za-z0-9._-]` chars replaced with `_`):
-  `2026-07-17__djinni.co_jobs_123456-senior-python-engineer.md`
+- **Filename** contains the scrape date and the URL (the card's detail-page URL,
+  even though it is never fetched), sanitized to be filesystem-safe (scheme
+  stripped, non-`[A-Za-z0-9._-]` chars replaced with `_`):
+  `2026-07-17__djinni.co_jobs_123456-senior-full-stack-developer.md`
   - Date = scrape date, `YYYY-MM-DD`.
 - **Skip-existing** matches on the numeric job id parsed from the URL (the stable
   identifier, independent of date prefix or slug), so a re-run on a later date
-  does not re-fetch already-saved jobs.
+  does not re-write already-saved jobs.
 - **File contents** — labeled fields followed by the full description:
   - `Title`, `Company`, `Salary`, `Location/Remote`, `Experience`, `English`,
     `Company type/Domain`, `Posted`, `URL`, `Scraped-at`, then the full
@@ -121,8 +140,8 @@ Each unit has one purpose and a narrow interface:
 ## Error handling
 
 - Transient network error → bounded retry with exponential backoff (in fetcher).
-- A single job fails to parse → log a warning, skip **that job**, continue the
-  run (one bad page never kills the whole run).
+- A single card fails to parse → log a warning, skip **that card**, continue the
+  run (one malformed card never kills the whole run).
 - Block detected → stop the **entire** run gracefully (see Fetcher).
 - Invalid `listing_url` / non-djinni host → fail fast with a clear message before
   any scraping.
@@ -130,13 +149,15 @@ Each unit has one purpose and a narrow interface:
 ## Testing strategy
 
 - **TDD the parser** (the fragile boundary). `test_parser.py` runs against a real
-  saved HTML fixture (`tests/fixtures/`) and asserts each extracted field for a
-  job page, and asserts the job-URL list for a listing page. When djinni changes
-  markup, a failing test points straight at the fix.
+  saved listing-page fixture (`tests/fixtures/`) and asserts: the expected number
+  of `JobPosting` objects, the full-vs-truncated description fallback (including
+  the one short card with no `js-original-text`), and each extracted field for a
+  known card. When djinni changes markup, a failing test points straight at the
+  fix.
 - **`test_storage.py`** — filename sanitization (URL → safe filename containing
-  date + URL) and skip-existing logic (a matching file causes a skip).
+  date + URL) and skip-existing logic (a matching numeric id causes a skip).
 - Fetcher is **not** tested against the live site (flaky and impolite). Its delay
-  math may optionally be unit-tested with an injected clock, but that is optional.
+  math may optionally be unit-tested with an injected clock.
 
 ## CLI flags (summary)
 
@@ -145,7 +166,7 @@ Each unit has one purpose and a narrow interface:
 | `listing_url` (positional) | — | djinni listing URL to scrape |
 | `--out-dir` | `./output` | where `.md` files are written |
 | `--max-pages` | unlimited | cap listing pages fetched |
-| `--max-jobs` | unlimited | cap total jobs fetched |
+| `--max-jobs` | unlimited | cap total postings saved |
 | `--delay` | `4.0` | base seconds between requests (±50% jitter applied) |
 
 ## Dependencies

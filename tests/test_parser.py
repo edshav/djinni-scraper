@@ -45,3 +45,18 @@ def test_missing_salary_is_none(postings):
     # id 827322 has no baseSalary in the JSON-LD
     p = by_id(postings, 827322)
     assert p.salary is None
+
+
+def test_location_is_always_string_or_none(postings):
+    """Regression: addressLocality can be a list; must normalize to string."""
+    for p in postings:
+        assert p.location is None or isinstance(p.location, str), \
+            f"Posting {p.id} has location={p.location!r} (type {type(p.location).__name__}), expected str or None"
+
+
+def test_posting_824991_list_location_normalized(postings):
+    """Posting 824991 has addressLocality as a list; verify it's normalized to comma-joined string."""
+    p = by_id(postings, 824991)
+    assert isinstance(p.location, str), f"Expected str, got {type(p.location).__name__}: {p.location!r}"
+    # The real cities in the list are: "Ivano-Frankivsk", "Kyiv", "Lviv"
+    assert "Kyiv" in p.location, f"Expected 'Kyiv' in location, got: {p.location!r}"

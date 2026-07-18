@@ -66,7 +66,11 @@ def _format_location(location_type, job_location) -> Optional[str]:
     if isinstance(job_location, dict):
         addr = job_location.get("address") or {}
         if isinstance(addr, dict):
-            return addr.get("addressLocality") or addr.get("addressCountry")
+            value = addr.get("addressLocality") or addr.get("addressCountry")
+            # Normalize list-valued locality/country to comma-joined string
+            if isinstance(value, list):
+                value = ", ".join(str(v) for v in value if v)
+            return value or None
     return None
 
 

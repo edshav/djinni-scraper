@@ -5,11 +5,13 @@
 
 ## Purpose
 
-Collect job postings from a djinni.co job-board listing URL for later analysis.
-Given a listing URL (no authentication required), the tool paginates through the
-whole listing and saves one Markdown file per posting. **The full posting content
-lives on the listing page itself** — no detail-page visits are needed. Each
-filename contains the scrape date and the posting URL.
+Collect job postings from a djinni.co job-board listing URL for later analysis
+**with an AI assistant (e.g. Claude Code)**. Given a listing URL (no
+authentication required), the tool paginates through the whole listing and saves
+all postings into **a single combined Markdown file** named for the scrape date
+and the listing/search URL. **The full posting content lives on the listing page
+itself** — no detail-page visits are needed. Expected volume is hundreds of
+postings per run, which fits comfortably in one file.
 
 ## Key facts established during research
 
@@ -60,7 +62,7 @@ djinni-scrapper/
     models.py     # JobPosting dataclass
     fetcher.py    # HTTP + all anti-block logic
     parser.py     # listing HTML -> list[JobPosting]
-    storage.py    # JobPosting -> .md, skip-existing
+    storage.py    # append JobPostings to one combined .md, dedup by id
     cli.py        # arg parsing, orchestration, progress, block handling
   tests/
     fixtures/     # saved real listing-page HTML
@@ -80,8 +82,9 @@ Each unit has one purpose and a narrow interface:
 - **`parser`** — pure functions over HTML strings, no I/O:
   - `parse_listing(html, base_url) -> list[JobPosting]` — one `JobPosting` per
     `job-item` card. An empty list signals "no more results / last page".
-- **`storage`** — `JobPosting` -> `.md` file; filename building; skip-existing check.
-  Depends on: filesystem, out-dir.
+- **`storage`** — appends `JobPosting`s to the single combined `.md` file;
+  builds the run filename from the listing URL + date; on open, reads back already
+  saved job ids for skip/dedup. Depends on: filesystem, out-dir.
 - **`cli`** — wires the above, prints progress, enforces limits, handles
   `BlockedError` by stopping the whole run gracefully.
 
@@ -94,10 +97,13 @@ Each unit has one purpose and a narrow interface:
    `urllib.parse`), fetch it, and `parse_listing` it into a list of `JobPosting`.
    Stop when: the page yields **no** cards (last page), OR `--max-pages` is
    reached, OR cumulative postings reach `--max-jobs`.
-3. **Per posting (already fully parsed from the page).** If a file for that job
-   already exists in the out-dir (matched by the numeric job id from the URL —
-   the stable identifier, independent of date prefix or slug) → **skip**.
-   Otherwise write the `.md`. No additional HTTP request is made per posting.
+3. **Per posting (already fully parsed from the page).** If the posting's numeric
+   job id was already saved to this run's combined file (read back on open — the
+   id is the stable identifier, independent of date or slug) → **skip**.
+   Otherwise **append** the posting as a Markdown section to the combined file and
+   flush. No additional HTTP request is made per posting. Appending live means a
+   mid-run block loses no already-collected postings, and a re-run resumes by
+   skipping ids already present.
 4. A polite delay (with jitter) precedes **every** listing-page request. Since
    postings need no requests of their own, total requests ≈ number of listing
    pages.
@@ -116,26 +122,31 @@ Each unit has one purpose and a narrow interface:
   otherwise exponential backoff with bounded retries for transient network errors.
 - **Stop-on-block.** On `429`, `403`, or a detected Cloudflare challenge page,
   raise `BlockedError` to halt the entire run gracefully with a clear message
-  ("you may be throttled — wait and re-run later"). Because per-job files are
-  already saved, re-running later resumes. The tool deliberately does **not** keep
-  requesting once flagged.
+  ("you may be throttled — wait and re-run later"). Because postings are appended
+  to the combined file as they are scraped, re-running later resumes from where it
+  stopped. The tool deliberately does **not** keep requesting once flagged.
 
 ## Storage & filename
 
-- One `.md` file per job posting, written to `--out-dir` (default `./output`).
-- **Filename** contains the scrape date and the URL (the card's detail-page URL,
-  even though it is never fetched), sanitized to be filesystem-safe (scheme
-  stripped, non-`[A-Za-z0-9._-]` chars replaced with `_`):
-  `2026-07-17__djinni.co_jobs_123456-senior-full-stack-developer.md`
-  - Date = scrape date, `YYYY-MM-DD`.
-- **Skip-existing** matches on the numeric job id parsed from the URL (the stable
-  identifier, independent of date prefix or slug), so a re-run on a later date
-  does not re-write already-saved jobs.
-- **File contents** — labeled fields followed by the full description:
-  - `Title`, `Company`, `Salary`, `Location/Remote`, `Experience`, `English`,
-    `Company type/Domain`, `Posted`, `URL`, `Scraped-at`, then the full
+- **One combined `.md` file per run**, written to `--out-dir` (default `./output`).
+- **Filename** contains the scrape date and the **listing/search URL**, sanitized
+  to be filesystem-safe (scheme stripped, non-`[A-Za-z0-9._-]` chars collapsed to
+  `_`, length-bounded):
+  `2026-07-17__djinni.co_jobs_Fullstack_salary-3000.md`
+  - Date = scrape date, `YYYY-MM-DD`. Re-running the same search on the same day
+    reuses/extends the same file (append + skip); a different day starts a new file.
+- **File structure** — a short run header (source listing URL, scrape date), then
+  one `##` section per posting separated by `---`. Each section has labeled fields
+  followed by the full description:
+  - `Title` (as the `##` heading), `Company`, `Salary`, `Location/Remote`,
+    `Experience`, `English`, `Company type/Domain`, `Posted`, `URL` (the posting's
+    detail URL, for reference and as the id source), `Scraped-at`, then the full
     description text.
   - Missing fields are written as `N/A` (kept, for consistent structure).
+- **Skip / dedup** matches on the numeric job id parsed from each posting's URL
+  (the stable identifier). On open, the storage layer reads back ids already
+  present in the file so appends never duplicate — covering both cross-page
+  duplicates (e.g. featured + normal listing) and resumed runs.
 
 ## Error handling
 
@@ -154,8 +165,10 @@ Each unit has one purpose and a narrow interface:
   the one short card with no `js-original-text`), and each extracted field for a
   known card. When djinni changes markup, a failing test points straight at the
   fix.
-- **`test_storage.py`** — filename sanitization (URL → safe filename containing
-  date + URL) and skip-existing logic (a matching numeric id causes a skip).
+- **`test_storage.py`** — run-filename building from a listing URL (date + safe
+  sanitized search URL); appending a posting produces a well-formed `##` section;
+  and read-back dedup (a posting whose id is already in the file is skipped, so a
+  second append of the same id does not duplicate).
 - Fetcher is **not** tested against the live site (flaky and impolite). Its delay
   math may optionally be unit-tested with an injected clock.
 

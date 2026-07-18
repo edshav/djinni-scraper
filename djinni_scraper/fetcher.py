@@ -74,10 +74,16 @@ class Fetcher:
                 resp = self._session.get(url, headers=self._headers, timeout=self._timeout)
             except Exception as exc:  # network error -> backoff and retry
                 last_exc = exc
-                self._sleep(2 ** attempt)
+                if attempt < self._max_retries:
+                    self._sleep(2 ** attempt)
                 continue
 
             status = resp.status_code
+            # A Cloudflare challenge page must halt us immediately regardless
+            # of status code (it's commonly served with a 503), so this check
+            # runs before any status-based retry/backoff branch.
+            if self._is_challenge(resp.text):
+                raise BlockedError(f"Cloudflare challenge detected at {url}")
             if status in _BLOCK_STATUSES:
                 if status == 429 and attempt < self._max_retries:
                     self._sleep(self._retry_after(resp, attempt))
@@ -90,8 +96,6 @@ class Fetcher:
                 raise BlockedError(f"Repeated HTTP {status} at {url}; stopping to avoid a block")
             if status >= 400:
                 raise BlockedError(f"Unexpected HTTP {status} at {url}")
-            if self._is_challenge(resp.text):
-                raise BlockedError(f"Cloudflare challenge detected at {url}")
             return resp.text
 
         raise BlockedError(f"Giving up after retries at {url}: {last_exc}")

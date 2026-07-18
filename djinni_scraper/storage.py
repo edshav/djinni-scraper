@@ -76,18 +76,26 @@ class MarkdownStore:
         self._out_dir.mkdir(parents=True, exist_ok=True)
         if self.path.exists() and not self._overwrite:
             existing = self.path.read_text(encoding="utf-8")
-            match = _HEADER_URL_RE.search(existing)
-            if match and match.group(1) != self._source_url:
-                raise SourceMismatch(
-                    f"{self.path} was created for {match.group(1)!r}, not "
-                    f"{self._source_url!r}. Use --overwrite or a different --out-dir."
-                )
-            self._ids = {int(m) for m in _ID_MARKER_RE.findall(existing)}
-            self._handle = self.path.open("a", encoding="utf-8")
-        else:
-            self._handle = self.path.open("w", encoding="utf-8")
-            self._handle.write(self._header())
-            self._handle.flush()
+            if existing:
+                match = _HEADER_URL_RE.search(existing)
+                if match is None:
+                    raise SourceMismatch(
+                        f"{self.path} exists but has no recognizable djinni-scraper "
+                        "header (no 'source_url:' line found); it may be truncated "
+                        "or an unrelated file. Use --overwrite or a different "
+                        "--out-dir."
+                    )
+                if match.group(1) != self._source_url:
+                    raise SourceMismatch(
+                        f"{self.path} was created for {match.group(1)!r}, not "
+                        f"{self._source_url!r}. Use --overwrite or a different --out-dir."
+                    )
+                self._ids = {int(m) for m in _ID_MARKER_RE.findall(existing)}
+                self._handle = self.path.open("a", encoding="utf-8")
+                return
+        self._handle = self.path.open("w", encoding="utf-8")
+        self._handle.write(self._header())
+        self._handle.flush()
 
     def _header(self) -> str:
         return (

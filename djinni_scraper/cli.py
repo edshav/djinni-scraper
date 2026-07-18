@@ -40,6 +40,7 @@ def run(
 
     written = 0
     page = 1
+    previous_ids: Optional[set] = None
     try:
         while True:
             if max_pages is not None and page > max_pages:
@@ -54,6 +55,16 @@ def run(
             if not postings:
                 log.info("No postings on page %s; done.", page)
                 break
+
+            current_ids = {p.id for p in postings}
+            if current_ids == previous_ids:
+                log.warning(
+                    "page %s repeated the previous page's postings; stopping — "
+                    "pagination appears clamped",
+                    page,
+                )
+                break
+            previous_ids = current_ids
 
             for posting in postings:
                 if max_jobs is not None and store.count >= max_jobs:

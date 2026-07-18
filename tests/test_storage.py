@@ -92,6 +92,27 @@ def test_source_url_mismatch_aborts(tmp_path):
         other.open()
 
 
+def test_open_aborts_on_headerless_file(tmp_path):
+    # Non-empty existing file with no recognizable djinni-scraper header --
+    # e.g. a previous run killed between opening the file and flushing the
+    # header, or an unrelated file that happens to share the computed name.
+    store = MarkdownStore(URL, tmp_path, WHEN)
+    store.path.write_text("garbage\n", encoding="utf-8")
+    with pytest.raises(SourceMismatch):
+        store.open()
+
+
+def test_open_treats_empty_existing_file_as_new(tmp_path):
+    store = MarkdownStore(URL, tmp_path, WHEN)
+    store.path.write_text("", encoding="utf-8")
+    store.open()
+    assert store.count == 0
+    store.close()
+    content = store.path.read_text(encoding="utf-8")
+    assert content.startswith("<!-- djinni-scraper")
+    assert f"source_url: {URL}" in content
+
+
 def test_overwrite_starts_fresh(tmp_path):
     first = MarkdownStore(URL, tmp_path, WHEN)
     first.open()

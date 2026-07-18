@@ -112,6 +112,47 @@ def test_run_stops_on_blocked_error(tmp_path):
     assert content.count("<!-- job-id:") == 15
 
 
+class ClampedFetcher:
+    """Simulates a site that clamps an out-of-range page=N to the last page:
+    every page returns the SAME non-empty postings, forever. Capped to a
+    small number of calls and raises past that -- so a still-broken
+    implementation fails loudly (assertion error) instead of hanging."""
+
+    def __init__(self, max_calls=5):
+        self.urls = []
+        self._html = FIXTURE.read_text(encoding="utf-8")
+        self._max_calls = max_calls
+
+    def get(self, url):
+        self.urls.append(url)
+        if len(self.urls) > self._max_calls:
+            raise AssertionError(
+                "fetcher called too many times; clamped pagination did not stop"
+            )
+        return self._html
+
+
+def test_run_stops_on_clamped_pagination(tmp_path):
+    fetcher = ClampedFetcher()
+    written = run(
+        listing_url=URL,
+        out_dir=tmp_path,
+        max_pages=None,
+        max_jobs=1000,
+        delay=0.0,
+        overwrite=False,
+        fetcher=fetcher,
+        when=dt.date(2026, 7, 17),
+    )
+    assert written == 15
+    files = list(tmp_path.glob("2026-07-17__*.md"))
+    assert len(files) == 1
+    content = files[0].read_text(encoding="utf-8")
+    assert content.count("<!-- job-id:") == 15
+    # Page 1 appends 15 postings; page 2 repeats the same id-set -> stop.
+    assert fetcher.urls == [build_page_url(URL, 1), build_page_url(URL, 2)]
+
+
 def test_main_rejects_non_djinni_host(capsys, tmp_path):
     # --max-jobs 0 makes run() (if it's ever reached) stop before the very
     # first fetch, so this test cannot make a real network request even if

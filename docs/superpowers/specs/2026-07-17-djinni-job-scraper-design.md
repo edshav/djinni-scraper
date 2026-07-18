@@ -96,7 +96,7 @@ Each unit has one purpose and a narrow interface:
    params such as `primary_keyword`, `salary`, `search_type` via
    `urllib.parse`), fetch it, and `parse_listing` it into a list of `JobPosting`.
    Stop when: the page yields **no** cards (last page), OR `--max-pages` is
-   reached, OR cumulative postings reach `--max-jobs`.
+   reached, OR the output file's total postings reach `--max-jobs` (default 1000).
 3. **Per posting (already fully parsed from the page).** If the posting's numeric
    job id was already saved to this run's combined file (read back on open — the
    id is the stable identifier, independent of date or slug) → **skip**.
@@ -148,6 +148,26 @@ Each unit has one purpose and a narrow interface:
   present in the file so appends never duplicate — covering both cross-page
   duplicates (e.g. featured + normal listing) and resumed runs.
 
+### Re-running when the output file already exists
+
+Because the filename is *date + search URL*, re-running the same search on the
+same day intentionally targets the same file. Handling:
+
+1. **Verify source URL.** The file's run header records the exact source
+   `listing_url`. On open, compare it to the current one. A mismatch means two
+   different searches sanitized to the same filename → **abort** with a clear
+   message (suggesting `--overwrite` or a different `--out-dir`) rather than mixing
+   searches into one file.
+2. **Resume (default).** On a match, read the job ids already in the file, then
+   scrape normally, **skipping** ids already present and **appending** new ones.
+   Non-destructive and idempotent: nothing already saved is rewritten, nothing is
+   duplicated. (Listing pages are still re-walked — bounded by `--max-jobs` — since
+   no page cursor is persisted.)
+3. **`--overwrite`.** Truncate/replace the existing file and scrape fresh.
+
+`--max-jobs` caps the **total** postings in the file (already-present + newly
+appended), so a resumed run counts what is already saved toward the limit.
+
 ## Error handling
 
 - Transient network error → bounded retry with exponential backoff (in fetcher).
@@ -156,6 +176,8 @@ Each unit has one purpose and a narrow interface:
 - Block detected → stop the **entire** run gracefully (see Fetcher).
 - Invalid `listing_url` / non-djinni host → fail fast with a clear message before
   any scraping.
+- Existing output file whose header source URL differs from the current
+  `listing_url` → fail fast (abort) before scraping; suggest `--overwrite`.
 
 ## Testing strategy
 
@@ -167,8 +189,9 @@ Each unit has one purpose and a narrow interface:
   fix.
 - **`test_storage.py`** — run-filename building from a listing URL (date + safe
   sanitized search URL); appending a posting produces a well-formed `##` section;
-  and read-back dedup (a posting whose id is already in the file is skipped, so a
-  second append of the same id does not duplicate).
+  read-back dedup (a posting whose id is already in the file is skipped, so a
+  second append of the same id does not duplicate); resume reads existing ids from
+  a pre-populated file; and header source-URL mismatch aborts.
 - Fetcher is **not** tested against the live site (flaky and impolite). Its delay
   math may optionally be unit-tested with an injected clock.
 
@@ -177,10 +200,11 @@ Each unit has one purpose and a narrow interface:
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `listing_url` (positional) | — | djinni listing URL to scrape |
-| `--out-dir` | `./output` | where `.md` files are written |
+| `--out-dir` | `./output` | where the combined `.md` file is written |
 | `--max-pages` | unlimited | cap listing pages fetched |
-| `--max-jobs` | unlimited | cap total postings saved |
+| `--max-jobs` | `1000` | cap total postings in the output file (existing + new); ~67 pages |
 | `--delay` | `4.0` | base seconds between requests (±50% jitter applied) |
+| `--overwrite` | off | ignore an existing run file and scrape fresh |
 
 ## Dependencies
 

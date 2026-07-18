@@ -80,6 +80,79 @@ def _format_domain(industry) -> Optional[str]:
     return str(industry)
 
 
+def _card_english(card) -> Optional[str]:
+    for span in card.select("span.text-nowrap"):
+        text = span.get_text(" ", strip=True)
+        if text.startswith("English"):
+            return text.split("-", 1)[1].strip() if "-" in text else text
+    return None
+
+
+def _card_geography(card) -> Optional[str]:
+    node = card.select_one(".location-text")
+    return node.get_text(strip=True) if node else None
+
+
+def _card_description(card) -> Optional[str]:
+    original = card.select_one(".js-original-text")
+    node = original or card.select_one(".js-truncated-text")
+    if node is None:
+        return None
+    text = node.get_text("\n", strip=True)
+    return text or None
+
+
+def _enrich_from_cards(postings: list[JobPosting], soup: BeautifulSoup) -> None:
+    by_id = {p.id: p for p in postings}
+    for card in soup.select("div.job-item[id^='job-item-']"):
+        raw_id = (card.get("id") or "").rsplit("-", 1)[-1]
+        if not raw_id.isdigit():
+            continue
+        posting = by_id.get(int(raw_id))
+        if posting is None:
+            continue
+        english = _card_english(card)
+        if english and not posting.english:
+            posting.english = english
+        geography = _card_geography(card)
+        if geography:
+            if posting.location and geography.lower() not in posting.location.lower():
+                posting.location = f"{posting.location} · {geography}"
+            elif not posting.location:
+                posting.location = geography
+
+
+def _parse_cards(soup: BeautifulSoup, base_url: str) -> list[JobPosting]:
+    from urllib.parse import urljoin
+
+    postings: list[JobPosting] = []
+    for card in soup.select("div.job-item[id^='job-item-']"):
+        raw_id = (card.get("id") or "").rsplit("-", 1)[-1]
+        if not raw_id.isdigit():
+            continue
+        link = card.select_one("a.job_item__header-link[href]") or card.select_one("a[href^='/jobs/']")
+        url = urljoin(base_url, link["href"]) if link else f"{base_url}/jobs/{raw_id}/"
+        title_node = card.select_one("h2.job-item__position")
+        company_node = card.select_one("span.text-gray-800")
+        salary_node = card.select_one(".text-success")
+        postings.append(
+            JobPosting(
+                url=url,
+                id=int(raw_id),
+                title=title_node.get_text(" ", strip=True) if title_node else None,
+                company=company_node.get_text(" ", strip=True) if company_node else None,
+                salary=salary_node.get_text(" ", strip=True) if salary_node else None,
+                location=None,
+                experience=None,
+                english=None,
+                domain=None,
+                posted=None,
+                description=_card_description(card),
+            )
+        )
+    return postings
+
+
 def _parse_jsonld(soup: BeautifulSoup) -> list[JobPosting]:
     postings: list[JobPosting] = []
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
@@ -118,6 +191,15 @@ def _parse_jsonld(soup: BeautifulSoup) -> list[JobPosting]:
 
 
 def parse_listing(html: str, base_url: str = "https://djinni.co") -> list[JobPosting]:
-    """Parse one listing page into JobPosting objects (JSON-LD only for now)."""
+    """Parse one listing page into JobPosting objects.
+
+    JSON-LD is the primary source; English level and geography are enriched from
+    the HTML card. If the JSON-LD is missing, fall back to HTML-card parsing.
+    An empty result signals the last page.
+    """
     soup = BeautifulSoup(html, "lxml")
-    return _parse_jsonld(soup)
+    postings = _parse_jsonld(soup)
+    if not postings:
+        postings = _parse_cards(soup, base_url)
+    _enrich_from_cards(postings, soup)
+    return postings

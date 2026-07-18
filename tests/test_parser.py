@@ -60,3 +60,24 @@ def test_posting_824991_list_location_normalized(postings):
     assert isinstance(p.location, str), f"Expected str, got {type(p.location).__name__}: {p.location!r}"
     # The real cities in the list are: "Ivano-Frankivsk", "Kyiv", "Lviv"
     assert "Kyiv" in p.location, f"Expected 'Kyiv' in location, got: {p.location!r}"
+
+
+def test_english_and_geography_enriched_from_card(postings):
+    p = by_id(postings, 837890)
+    assert p.english == "B2"
+    assert p.location == "Remote · Worldwide"
+
+
+def test_fallback_parses_cards_when_jsonld_absent():
+    html = FIXTURE.read_text(encoding="utf-8")
+    # Remove all JSON-LD to force the HTML-card fallback path.
+    import re as _re
+    stripped = _re.sub(
+        r'<script type="application/ld\+json">.*?</script>', "", html, flags=_re.S
+    )
+    postings = parse_listing(stripped, base_url="https://djinni.co")
+    assert len(postings) == 15
+    p = next(x for x in postings if x.id == 837890)
+    assert p.title and "integration engineer" in p.title.lower()
+    assert p.english == "B2"
+    assert p.description and "SAP" in p.description

@@ -18,6 +18,22 @@ postings per run, which fits comfortably in one file.
 - **Server-side rendered.** All job data (titles, metadata, and the *full*
   descriptions) is present in the initial listing-page HTML. No headless browser
   is required; a plain HTTP client + HTML parser is sufficient.
+- **Primary source: embedded JSON-LD (schema.org `JobPosting`).** Each listing
+  page contains a single `<script type="application/ld+json">` holding a JSON
+  **array of all ~15 postings** on that page. Verified per-posting fields:
+  `title`, `hiringOrganization.name` (company), `baseSalary` (structured
+  `currency` + `value.minValue`/`maxValue`, or absent), `datePosted` (ISO),
+  `description` (**full**, ~2,000–2,900 chars, newline-formatted),
+  `url`, `identifier` (numeric job id), `experienceRequirements.monthsOfExperience`,
+  `industry` (slug, e.g. `fintech`/`saas`/`crypto`/`proptech`/`other`),
+  `jobLocationType` (e.g. `TELECOMMUTE`), `employmentType`, `category`,
+  `validThrough`. This is stable, machine-readable data the site publishes for
+  search engines — far less brittle than CSS-class scraping.
+- **English level (and geography) come from the HTML card.** `English - B2` is
+  djinni-specific and is **not** in the JSON-LD; it is in each card's metadata row
+  (15/15 present). Geography (`jobLocation` is `null` for remote jobs) also comes
+  from the card. The parser matches card to JSON-LD posting by the numeric id in
+  `id="job-item-<id>"`.
 - **Full description is on the listing page.** Each job card contains two copies
   of the description: `js-truncated-text` (the snippet shown) and
   `js-original-text description-expandable d-none` — the **complete** description,
@@ -80,8 +96,13 @@ Each unit has one purpose and a narrow interface:
   behavior. Interface: `get(url) -> str` (HTML). Raises `BlockedError` when a block
   is detected. Depends on: `requests`, config (delay, jitter, user-agent).
 - **`parser`** — pure functions over HTML strings, no I/O:
-  - `parse_listing(html, base_url) -> list[JobPosting]` — one `JobPosting` per
-    `job-item` card. An empty list signals "no more results / last page".
+  - `parse_listing(html, base_url) -> list[JobPosting]` — **JSON-LD first**: parse
+    the page's `application/ld+json` array into one `JobPosting` per posting
+    (title, company, salary, experience, industry, remote type, posted, url, id,
+    full description), then enrich each by id with **English level + geography**
+    scraped from the matching `id="job-item-<id>"` HTML card. Falls back to
+    HTML-card parsing for any posting absent from the JSON-LD (or if the JSON-LD
+    is missing). An empty list signals "no more results / last page".
 - **`storage`** — appends `JobPosting`s to the single combined `.md` file;
   builds the run filename from the listing URL + date; on open, reads back already
   saved job ids for skip/dedup. Depends on: filesystem, out-dir.
@@ -138,10 +159,12 @@ Each unit has one purpose and a narrow interface:
 - **File structure** — a short run header (source listing URL, scrape date), then
   one `##` section per posting separated by `---`. Each section has labeled fields
   followed by the full description:
-  - `Title` (as the `##` heading), `Company`, `Salary`, `Location/Remote`,
-    `Experience`, `English`, `Company type/Domain`, `Posted`, `URL` (the posting's
-    detail URL, for reference and as the id source), `Scraped-at`, then the full
-    description text.
+  - `Title` (as the `##` heading), `Company`, `Salary` (from `baseSalary`,
+    formatted e.g. `$3000–5000/mo`), `Location/Remote` (from `jobLocationType` +
+    geography), `Experience` (from `monthsOfExperience`, formatted e.g. `5 years`),
+    `English`, `Company type/Domain` (from `industry`), `Posted` (from
+    `datePosted`), `URL` (the posting's detail URL, for reference and as the id
+    source), `Scraped-at`, then the full description text.
   - Missing fields are written as `N/A` (kept, for consistent structure).
 - **Skip / dedup** matches on the numeric job id parsed from each posting's URL
   (the stable identifier). On open, the storage layer reads back ids already
@@ -182,11 +205,14 @@ appended), so a resumed run counts what is already saved toward the limit.
 ## Testing strategy
 
 - **TDD the parser** (the fragile boundary). `test_parser.py` runs against a real
-  saved listing-page fixture (`tests/fixtures/`) and asserts: the expected number
-  of `JobPosting` objects, the full-vs-truncated description fallback (including
-  the one short card with no `js-original-text`), and each extracted field for a
-  known card. When djinni changes markup, a failing test points straight at the
-  fix.
+  saved listing-page fixture (`tests/fixtures/listing_fullstack.html`, already
+  committed) and asserts: the expected number of `JobPosting` objects (15);
+  the JSON-LD-derived fields for a known posting (id 837890 — title, company
+  `Upstaff`, salary `$3000–5000/mo`, experience `5 years`, industry `proptech`,
+  remote `TELECOMMUTE`, full description length); the English level + geography
+  enriched from the HTML card (`English - B2`, `Worldwide`); and that a posting
+  with no `baseSalary` yields `Salary = N/A`. When djinni changes markup, a
+  failing test points straight at the fix.
 - **`test_storage.py`** — run-filename building from a listing URL (date + safe
   sanitized search URL); appending a posting produces a well-formed `##` section;
   read-back dedup (a posting whose id is already in the file is skipped, so a

@@ -83,12 +83,9 @@ def main(argv=None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    host = urlsplit(args.listing_url).netloc.lower().split(":")[0]
+    host = urlsplit(args.listing_url).hostname or ""
     if host != "djinni.co" and not host.endswith(".djinni.co"):
-        print(
-            f"error: listing_url host must be djinni.co (or a djinni.co subdomain), got {host!r}",
-            file=sys.stderr,
-        )
+        print("error: listing_url must be a djinni.co URL", file=sys.stderr)
         return 2
 
     try:

@@ -125,6 +125,10 @@ def test_main_rejects_non_djinni_host(capsys, tmp_path):
     assert main(["https://djinni.co.evil.com/jobs", *safe_args]) == 2
     assert "djinni.co" in capsys.readouterr().err
 
+    # Userinfo spoofing: netloc is "djinni.co:x@evil.com", real host is "evil.com".
+    assert main(["https://djinni.co:x@evil.com/jobs", *safe_args]) == 2
+    assert "djinni.co" in capsys.readouterr().err
+
     # A genuine djinni.co host must NOT be rejected for the host reason.
     assert main(["https://djinni.co/jobs/", *safe_args]) == 0
 

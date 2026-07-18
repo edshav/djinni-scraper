@@ -1,7 +1,9 @@
 import datetime as dt
 from pathlib import Path
 
-from djinni_scraper.cli import build_page_url, run
+from djinni_scraper.cli import build_page_url, main, run
+from djinni_scraper.fetcher import BlockedError
+from djinni_scraper.storage import run_filename
 
 FIXTURE = Path(__file__).parent / "fixtures" / "listing_fullstack.html"
 URL = "https://djinni.co/jobs/?primary_keyword=Fullstack&salary=3000"
@@ -69,3 +71,83 @@ def test_run_respects_max_jobs(tmp_path):
     assert written == 5
     # Should stop after page 1 without fetching page 2.
     assert fetcher.urls == [build_page_url(URL, 1)]
+
+
+class BlockedAfterFirstPageFetcher:
+    """Returns the fixture for page 1 (15 postings), then raises BlockedError
+    on page 2 -- simulating djinni throttling us mid-run. No real network."""
+
+    def __init__(self):
+        self.urls = []
+        self._html = FIXTURE.read_text(encoding="utf-8")
+
+    def get(self, url):
+        self.urls.append(url)
+        if "page=1" in url:
+            return self._html
+        raise BlockedError("blocked at page 2")
+
+
+def test_run_stops_on_blocked_error(tmp_path):
+    fetcher = BlockedAfterFirstPageFetcher()
+    written = run(
+        listing_url=URL,
+        out_dir=tmp_path,
+        max_pages=None,
+        max_jobs=1000,
+        delay=0.0,
+        overwrite=False,
+        fetcher=fetcher,
+        when=dt.date(2026, 7, 17),
+    )
+    # The BlockedError must be caught inside run(), not propagated: partial
+    # progress (page 1's postings) is preserved and reported as an int.
+    assert isinstance(written, int)
+    assert written == 15
+    # The store must have been closed (via the `finally` clause) so the file
+    # is fully flushed and readable, even though the run stopped early.
+    files = list(tmp_path.glob("2026-07-17__*.md"))
+    assert len(files) == 1
+    content = files[0].read_text(encoding="utf-8")
+    assert content.count("<!-- job-id:") == 15
+
+
+def test_main_rejects_non_djinni_host(capsys, tmp_path):
+    # --max-jobs 0 makes run() (if it's ever reached) stop before the very
+    # first fetch, so this test cannot make a real network request even if
+    # the host check under test were buggy and wrongly let a bad host through.
+    safe_args = ["--max-jobs", "0", "--out-dir", str(tmp_path)]
+
+    assert main(["https://notdjinni.co/jobs", *safe_args]) == 2
+    assert "djinni.co" in capsys.readouterr().err
+
+    # Spoofed subdomain-looking host: real host is "djinni.co.evil.com".
+    assert main(["https://djinni.co.evil.com/jobs", *safe_args]) == 2
+    assert "djinni.co" in capsys.readouterr().err
+
+    # A genuine djinni.co host must NOT be rejected for the host reason.
+    assert main(["https://djinni.co/jobs/", *safe_args]) == 0
+
+
+def test_main_reports_source_mismatch(tmp_path, capsys):
+    real_url = URL
+    different_url = "https://djinni.co/jobs/?primary_keyword=Backend"
+    when = dt.date.today()
+
+    existing_path = tmp_path / run_filename(real_url, when)
+    existing_path.write_text(
+        "<!-- djinni-scraper\n"
+        f"source_url: {different_url}\n"
+        f"scraped_at: {when.isoformat()}\n"
+        "-->\n"
+        f"# Djinni postings — {different_url}\n\n",
+        encoding="utf-8",
+    )
+
+    # No fetcher is injected: this relies on store.open() raising
+    # SourceMismatch before run() ever constructs/calls a real Fetcher.get().
+    result = main([real_url, "--out-dir", str(tmp_path)])
+
+    assert result == 2
+    err = capsys.readouterr().err
+    assert "was created for" in err

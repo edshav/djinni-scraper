@@ -25,7 +25,7 @@ Options:
 ## Politeness / avoiding blocks
 
 djinni will IP-block aggressive scrapers. This tool is sequential, waits
-`--delay` (±50% jitter) between every request, honors `Retry-After`, and **stops
-immediately** on `429`/`403`/Cloudflare challenge. Because postings are appended
-live and deduped by job id, re-running later resumes where it stopped. Raise
-`--delay` for large runs.
+`--delay` (±50% jitter) between every request, honors `Retry-After` and backs
+off with retries on `429`, and **stops immediately** on `403` or a detected
+Cloudflare challenge. Because postings are appended live and deduped by job id,
+re-running later resumes where it stopped. Raise `--delay` for large runs.

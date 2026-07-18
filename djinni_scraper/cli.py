@@ -83,8 +83,13 @@ def main(argv=None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    if "djinni.co" not in urlsplit(args.listing_url).netloc:
-        parser.error("listing_url must be a djinni.co URL")
+    host = urlsplit(args.listing_url).netloc.lower().split(":")[0]
+    if host != "djinni.co" and not host.endswith(".djinni.co"):
+        print(
+            f"error: listing_url host must be djinni.co (or a djinni.co subdomain), got {host!r}",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         written = run(

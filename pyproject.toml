@@ -1,0 +1,23 @@
+[project]
+name = "djinni-scraper"
+version = "0.1.0"
+description = "Polite scraper for djinni.co job listings"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.31", "beautifulsoup4>=4.12", "lxml>=5.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+djinni-scraper = "djinni_scraper.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["djinni_scraper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -5,6 +5,21 @@ search URL, reads each posting from the page's embedded JSON-LD (no detail-page
 requests, no browser), and writes everything into one Markdown file per run for
 AI-assisted analysis.
 
+## Claude Code plugin
+
+    /plugin marketplace add edshav/skills
+    /plugin install djinni@edshav
+
+Then give Claude a djinni search URL, or run `/djinni:scrape <URL>`. The skill
+runs the CLI through `uvx` (needs [uv](https://docs.astral.sh/uv/)), writes to
+`~/djinni-jobs`, stops on a block without retrying, and answers questions from
+the resulting file.
+
+Dev loop: `claude --plugin-dir .` loads this checkout. uvx caches the build, so
+after changing the package code run
+`uvx --no-config --refresh-package djinni-scraper --from . djinni-scraper --help`
+once.
+
 ## Install
 
     python3 -m venv .venv

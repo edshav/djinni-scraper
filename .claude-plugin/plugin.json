@@ -1,0 +1,6 @@
+{
+  "name": "djinni",
+  "description": "Politely scrape a djinni.co job search into one Markdown file and analyse the postings.",
+  "author": { "name": "Eduard Shavyrko", "url": "https://github.com/edshav" },
+  "repository": "https://github.com/edshav/djinni-scraper"
+}
